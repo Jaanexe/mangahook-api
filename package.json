@@ -1,7 +1,7 @@
 {
   "name": "mangahook-api",
-  "version": "3.0.0",
-  "description": "Public MangaHook catalogue and verified chapters from MangaDex and Weeb Central",
+  "version": "4.0.0",
+  "description": "Public manga catalogue, verified source selection and chapter pages",
   "main": "api/index.js",
   "scripts": {
     "test": "node --test tests/*.test.js",
