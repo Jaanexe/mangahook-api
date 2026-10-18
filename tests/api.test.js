@@ -51,8 +51,29 @@ test('automatic sources retain readable MangaDex chapters when an alternate sour
     assert.equal(result.body.source, 'mangadex');
     assert.equal(result.body.data[0].id, chapter);
     assert.equal(result.body.sourceHealth.status, 'working');
-    assert.equal(result.body.sourceHealth.attempts[0].source, 'mangakatana');
-    assert.match(result.body.sourceHealth.attempts[0].message, /HTTP 403/);
+    assert.ok(result.body.sourceHealth.attempts.some(a=>a.source==='mangadex'&&a.status==='working'));
+  });
+});
+
+test('Auto in another language only checks providers that supply that language', async () => {
+  const translated={...c,attributes:{...c.attributes,translatedLanguage:'fr'}};
+  await mocked(async input=>{
+    const url=new URL(input);
+    if(url.hostname==='fixture.mangadex.network')return new Response(Buffer.from([255,216,255,224,0,0,0,0]));
+    assert.equal(url.origin,'https://api.mangadex.org','English-only sources must not be queried');
+    if(url.pathname.endsWith('/feed')){
+      assert.equal(url.searchParams.get('translatedLanguage[]'),'fr');
+      return Response.json({result:'ok',data:[translated],total:1});
+    }
+    if(url.pathname.startsWith('/chapter/'))return ok(translated);
+    if(url.pathname.startsWith('/at-home/'))return Response.json({result:'ok',baseUrl:'https://fixture.mangadex.network',chapter:{hash:'b'.repeat(32),data:['1.jpg']}});
+    return ok(manga);
+  },async()=>{
+    const result=await handleRequest('/api/manga/'+id+'/chapters?source=auto&language=fr&all=1');
+    assert.equal(result.status,200);
+    assert.equal(result.body.source,'mangadex');
+    assert.equal(result.body.data[0].language,'fr');
+    assert.equal(result.body.sourceHealth.status,'working');
   });
 });
 test('chapter pages verify manga identity and trusted HTTPS image hosts', async () => {

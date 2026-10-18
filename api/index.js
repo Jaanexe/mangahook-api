@@ -169,7 +169,7 @@ async function handleRequest(url, method = 'GET') {
           if(result.status!==200)throw new ApiError(result.status,result.body.error);
           return result.body.data;
         },
-      })),probeImage);
+      })),probeImage,{preferred});
       const rows=selected.rows, isMd=selected.source==='mangadex';
       return {status:200,maxAge:60,body:{
         ...resultPage(all||isMd?rows:rows.slice(paging.offset,paging.offset+100),all?1:paging.number,all?Math.max(isMd?mdTotal:rows.length,1):100,isMd?mdTotal:rows.length),
