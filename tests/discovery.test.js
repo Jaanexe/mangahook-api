@@ -24,3 +24,8 @@ test('trend history requests coalesce and reuse public history across day and mo
  let calls=0;const api=createDiscovery({upstream:async()=>({data:[manga()],total:1}),safeManga:()=>({id:g,anilistId:1}),chapterRow:c=>c,fetcher:async()=>{calls++;return Response.json({data:{Page:{media:[{id:1,trends:{nodes:[{date:1700000000,trending:20}]}}]}}});}});
  const [a,b]=await Promise.all([api.browse(new URLSearchParams('section=trending&period=day')),api.browse(new URLSearchParams('section=trending&period=month'))]);assert.equal(calls,1);assert.equal(a.body.ranking,'anilist-activity');assert.equal(b.body.data[0].trendActivity,20);
 });
+test('missing popularity statistics never disguise a latest feed as a verified Hot ranking',async()=>{
+  const api=createDiscovery({upstream:async(path)=>{if(path==='/statistics/manga')throw Error('Unavailable');return {data:[manga()],total:1};},safeManga:()=>({id:g}),chapterRow:c=>c});
+  await assert.rejects(()=>api.browse(new URLSearchParams('section=latest&heat=hot')),/Hot rankings.*unavailable/);
+  assert.equal(rankTrends([{id:g,anilistId:1}],[{id:1,trends:{nodes:[]}}],'week').rows.length,0);
+});
