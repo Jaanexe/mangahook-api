@@ -36,6 +36,19 @@ test('empty chapter feeds stay empty instead of returning fake chapters', async 
     assert.equal(r.status, 200); assert.deepEqual(r.body.data, []); assert.equal(r.body.pagination.hasNext, false);
   });
 });
+test('automatic sources retain readable MangaDex chapters when an alternate source is unavailable', async () => {
+  await mocked(async (input) => {
+    const url = new URL(input);
+    if (url.origin === 'https://weebcentral.com') return new Response('Unavailable', { status: 403 });
+    return url.pathname.endsWith('/feed') ? Response.json({ result: 'ok', data: [c], total: 1 }) : ok(manga);
+  }, async () => {
+    const result = await handleRequest('/api/manga/' + id + '/chapters?source=auto&all=1');
+    assert.equal(result.status, 200);
+    assert.equal(result.body.source, 'mangadex');
+    assert.equal(result.body.data[0].id, chapter);
+    assert.match(result.body.sourceWarning, /HTTP 403/);
+  });
+});
 test('chapter pages verify manga identity and trusted HTTPS image hosts', async () => {
   await mocked(async (input) => {
     const path = new URL(input).pathname;

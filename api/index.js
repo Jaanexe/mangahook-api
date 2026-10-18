@@ -117,10 +117,16 @@ async function handleRequest(url, method = 'GET') {
         return { status: 200, maxAge: 120, body: { data: detail } };
       }
       if (source === 'weebcentral' && lang !== 'en') throw new ApiError(400, 'Weeb Central supplies English chapters. Choose MangaDex for other languages.');
+      let sourceWarning;
       if (lang === 'en' && source !== 'mangadex') {
-        const rows = await weeb.chapters(detail);
-        if (rows) return { status: 200, maxAge: 120, body: { ...resultPage(all ? rows : rows.slice(paging.offset, paging.offset + 100), all ? 1 : paging.number, all ? Math.max(rows.length, 1) : 100, rows.length), source: 'weebcentral', sourceName: 'Weeb Central', language: 'en' } };
-        if (source === 'weebcentral') throw new ApiError(404, 'No exact English edition was found on Weeb Central. Try MangaDex.');
+        try {
+          const rows = await weeb.chapters(detail);
+          if (rows?.length) return { status: 200, maxAge: 120, body: { ...resultPage(all ? rows : rows.slice(paging.offset, paging.offset + 100), all ? 1 : paging.number, all ? Math.max(rows.length, 1) : 100, rows.length), source: 'weebcentral', sourceName: 'Weeb Central', language: 'en' } };
+          if (source === 'weebcentral') throw new ApiError(404, 'No readable English edition was found on Weeb Central. Try MangaDex.');
+        } catch (error) {
+          if (source === 'weebcentral') throw error;
+          sourceWarning = error instanceof SourceError ? error.message : 'Weeb Central could not be reached. Showing MangaDex instead.';
+        }
       }
       const params = new URLSearchParams({ limit: all ? '500' : '100', offset: String(paging.offset), 'translatedLanguage[]': lang, includeEmptyPages: '0', includeExternalUrl: '0', 'includes[]': 'scanlation_group', 'order[volume]': 'asc', 'order[chapter]': 'asc' });
       const feed = await upstream('/manga/' + id + '/feed', params);
@@ -130,7 +136,7 @@ async function handleRequest(url, method = 'GET') {
         rows = rows.concat((await upstream('/manga/' + id + '/feed', params)).data);
       }
       rows = rows.filter((c) => c.attributes?.pages > 0 && !c.attributes.externalUrl).map(chapterRow);
-      return { status: 200, maxAge: 60, body: { ...resultPage(rows, paging.number, all ? Math.max(feed.total, 1) : 100, feed.total), source: 'mangadex', sourceName: 'MangaDex', language: lang, truncated: all && feed.total > 5000 } };
+      return { status: 200, maxAge: 60, body: { ...resultPage(rows, paging.number, all ? Math.max(feed.total, 1) : 100, feed.total), source: 'mangadex', sourceName: 'MangaDex', language: lang, sourceWarning, truncated: all && feed.total > 5000 } };
     }
     const chapter = path.match(/^\/api\/chapter\/([^/]+)$/);
     if (chapter) {

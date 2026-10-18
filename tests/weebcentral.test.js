@@ -49,6 +49,6 @@ test('reader checks series and chapter ownership before requesting page images',
 test('access challenges and upstream failures stay errors without bypasses or fake chapters', async () => {
   for (const failure of [new Response('', { status: 403 }), response('<title>Just a moment</title>')]) {
     const source = createWeebSource({ interval: 0, fetcher: async () => failure });
-    await assert.rejects(() => source.chapters(manga), /unavailable|not currently accessible/);
+    await assert.rejects(() => source.chapters(manga), /HTTP 403|not currently accessible/);
   }
 });
