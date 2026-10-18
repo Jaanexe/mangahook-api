@@ -1,5 +1,13 @@
 # MangaHook API
 
+Discovery adds `GET /api/discover?section=browse|trending|latest`, `GET /api/authors?q=NAME` and `GET /api/tags?all=1`. Public catalogue data only; no library is uploaded. Default discovery includes safe/suggestive titles. Explicit content-rating filters use the documented MangaDex rating categories.
+
+Browse supports comma-separated ratings, types, genres, themes, demographics, languages and publication statuses, independent genre/theme inclusion modes, author-or-artist IDs, release-year ranges, known final chapter numbers and documented catalogue sorting. Native filters run upstream; remaining conditions run on a bounded provider batch, preserving pagination even when no matching items occur in that batch. Unknown years/chapter totals never satisfy minimums. `unreleased` means a known future publication year and uses newest-year sorting, since MangaDex does not expose a confirmed upcoming status.
+
+Trending uses real daily [AniList trend activity](https://docs.anilist.co/reference/object/page), summed over day/week/month among the matched popular MangaDex titles linked by AniList IDs. It is not a global view-count ranking. Daily history is temporarily cached and reused across period switches. Latest Hot ranks popular titles among recent updates; New preserves the latest-update order. No unavailable 7/30-day view metrics are invented.
+
+Explicit-source chapter lists accept `metadata=1` to skip redundant sample-page/image checks when only a chapter index is needed. Automatic working-source selection still verifies a chapter image and its cross-site policy.
+
 MangaHook v4 combines MangaDex catalogue information with selectable Atsumaru, MangaKatana, MangaDex and Weeb Central chapter sources. The adapters work across exact-matched catalogue titles, not a list of hard-coded manga. Atsumaru, MangaKatana and Weeb Central supply English chapters; MangaDex supplies its available translations. This API has no database, accounts, cookies, reading history or personal libraries. SharkStream keeps personal data in the browser.
 
 ## Endpoints
