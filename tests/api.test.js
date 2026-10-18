@@ -83,7 +83,7 @@ test('upstream rate limits and missing resources remain explicit', async () => {
     });
   }
 });
-test('external-only and mature chapters are never presented as hosted pages', async () => {
+test('external-only chapters and unrecognised content ratings are never presented as hosted pages', async () => {
   await mocked(async (input) => new URL(input).pathname.startsWith('/chapter/') ? ok({ ...c, attributes: { ...c.attributes, externalUrl: 'https://publisher.test' } }) : ok(manga), async () => assert.equal((await handleRequest('/api/chapter/' + chapter + '?manga=' + id)).status, 404));
-  await mocked(async () => ok({ ...manga, attributes: { ...manga.attributes, contentRating: 'pornographic' } }), async () => assert.equal((await handleRequest('/api/manga/' + id)).status, 404));
+  await mocked(async () => ok({ ...manga, attributes: { ...manga.attributes, contentRating: 'unknown' } }), async () => assert.equal((await handleRequest('/api/manga/' + id)).status, 404));
 });
