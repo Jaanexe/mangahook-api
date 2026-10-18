@@ -13,6 +13,8 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
       - name: Start an isolated cloud test container
         run: >-
           docker run -d --name sharkstream-suwayomi-check --memory=1536m
@@ -20,7 +22,7 @@ jobs:
           -e WEB_UI_ENABLED=false -e KCEF_ENABLED=false
           -e UPDATE_INTERVAL=0 -e BACKUP_INTERVAL=0
           -e 'EXTENSION_STORES=["https://raw.githubusercontent.com/keiyoushi/extensions/repo/index.pb"]'
-          ghcr.io/suwayomi/suwayomi-server:stable
+          ghcr.io/suwayomi/suwayomi-server@sha256:1fac27c387dc2ea9949e1a01ad7f6d6de9d72d3988338a95476748e5c45c4582
       - name: Verify One Piece chapter list and a real chapter image
         run: python3 scripts/check-suwayomi-cloud.py
       - name: Show container diagnostics

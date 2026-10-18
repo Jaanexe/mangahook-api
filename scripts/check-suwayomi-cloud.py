@@ -28,11 +28,12 @@ for attempt in range(60):
     try:
         gql("query { __typename }")
         break
-    except (urllib.error.URLError, TimeoutError):
+    except OSError:
         if attempt == 59:
             raise
         time.sleep(2)
 
+print("Suwayomi is ready; fetching compatible extensions", flush=True)
 extensions = gql(
     "mutation { fetchExtensions(input: {}) { extensions { pkgName name versionName } } }"
 )["fetchExtensions"]["extensions"]
@@ -44,6 +45,7 @@ installed = gql(
     {"input": {"id": extension["pkgName"], "patch": {"install": True}}},
 )["updateExtension"]["extension"]
 assert installed["isInstalled"], "The extension did not install"
+print("WeebCentral is installed; searching for One Piece", flush=True)
 
 sources = gql("query { sources { nodes { id name lang } } }")["sources"]["nodes"]
 matches = [s for s in sources if "weeb" in s["name"].lower() and s["lang"] == "en"]
@@ -61,6 +63,7 @@ detail = gql(
     {"input": {"id": manga["id"], "fetchManga": True, "fetchChapters": True}},
 )["fetchMangaAndChapters"]
 chapters = detail["chapters"]
+print("One Piece chapters: " + str(len(chapters)), flush=True)
 assert len(chapters) > 100, "One Piece still has an incomplete chapter list: " + str(len(chapters))
 chapter = next((c for c in chapters if c["chapterNumber"] == 1), None)
 assert chapter, "Chapter one was not found"
