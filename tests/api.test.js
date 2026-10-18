@@ -39,7 +39,7 @@ test('empty chapter feeds stay empty instead of returning fake chapters', async 
 test('automatic sources retain readable MangaDex chapters when an alternate source is unavailable', async () => {
   await mocked(async (input) => {
     const url = new URL(input);
-    if (url.origin === 'https://weebcentral.com') return new Response('Unavailable', { status: 403 });
+    if (url.origin !== 'https://api.mangadex.org') return new Response('Unavailable', { status: 403 });
     return url.pathname.endsWith('/feed') ? Response.json({ result: 'ok', data: [c], total: 1 }) : ok(manga);
   }, async () => {
     const result = await handleRequest('/api/manga/' + id + '/chapters?source=auto&all=1');
