@@ -1,0 +1,34 @@
+name: Suwayomi cloud source trial
+on:
+  push:
+    branches: [codex/suwayomi-free-cloud]
+    paths:
+      - scripts/check-suwayomi-cloud.py
+      - .github/workflows/suwayomi-source.yml
+permissions:
+  contents: read
+jobs:
+  source:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - name: Start an isolated cloud test container
+        run: >-
+          docker run -d --name sharkstream-suwayomi-check --memory=1536m
+          -p 127.0.0.1:4567:4567
+          -e WEB_UI_ENABLED=false -e KCEF_ENABLED=false
+          -e UPDATE_INTERVAL=0 -e BACKUP_INTERVAL=0
+          -e 'EXTENSION_STORES=["https://raw.githubusercontent.com/keiyoushi/extensions/repo/index.pb"]'
+          ghcr.io/suwayomi/suwayomi-server:stable
+      - name: Verify One Piece chapter list and a real chapter image
+        run: python3 scripts/check-suwayomi-cloud.py
+      - name: Show container diagnostics
+        if: always()
+        run: |
+          docker inspect --format '{{.Image}}' sharkstream-suwayomi-check
+          docker stats --no-stream sharkstream-suwayomi-check
+          docker logs --tail 80 sharkstream-suwayomi-check
+      - name: Remove the temporary test container
+        if: always()
+        run: docker rm -f sharkstream-suwayomi-check
