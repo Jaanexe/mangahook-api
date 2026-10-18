@@ -142,7 +142,7 @@ async function handleRequest(url, method = 'GET') {
         return {status:200,maxAge:60,body:{...resultPage(rows,paging.number,all?Math.max(mdTotal,1):100,mdTotal),source:'mangadex',sourceName:'MangaDex',language:lang,truncated:mdTruncated}};
       }
       const adapters = {atsumaru:{name:'Atsumaru',api:atsu},mangakatana:{name:'MangaKatana',api:katana},weebcentral:{name:'Weeb Central',api:weeb}};
-      const order = source === 'auto' ? (lang === 'en' ? [...new Set([preferred, 'atsumaru', 'mangakatana', 'mangadex'].filter(Boolean))] : ['mangadex']) : [source];
+      const order = source === 'auto' ? (lang === 'en' ? [...new Set([preferred, 'mangakatana', 'atsumaru', 'mangadex'].filter(Boolean))] : ['mangadex']) : [source];
       const selected = await selectWorkingSource(order.map(name => ({
         id:name,name:name === 'mangadex'?'MangaDex':adapters[name].name,
         chapters:()=>name === 'mangadex'?mdRows():adapters[name].api.chapters(detail),

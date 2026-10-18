@@ -51,7 +51,7 @@ test('automatic sources retain readable MangaDex chapters when an alternate sour
     assert.equal(result.body.source, 'mangadex');
     assert.equal(result.body.data[0].id, chapter);
     assert.equal(result.body.sourceHealth.status, 'working');
-    assert.equal(result.body.sourceHealth.attempts[0].source, 'atsumaru');
+    assert.equal(result.body.sourceHealth.attempts[0].source, 'mangakatana');
     assert.match(result.body.sourceHealth.attempts[0].message, /HTTP 403/);
   });
 });

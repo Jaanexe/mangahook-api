@@ -11,6 +11,17 @@ test('a real image signature is checked once while fresh public health requests 
   let calls=0;const probe=createImageProbe({fetcher:async()=>{calls++;return new Response(Buffer.from('RIFF0000WEBPpayload'),{status:206});}});
   const [a,b]=await Promise.all([probe(image),probe(image)]);assert.ok(a>0);assert.equal(a,b);assert.equal(await probe(image),a);assert.equal(calls,1);
 });
+
+test('a valid image blocked from cross-site embedding is unavailable even when a direct request succeeds',async()=>{
+  for (const policy of ['same-site','same-origin']) {
+    const probe=createImageProbe({fetcher:async(url,options)=>{
+      assert.equal(options.headers.Origin,'https://shark-stream.vercel.app');
+      assert.equal(options.headers['Sec-Fetch-Site'],'cross-site');
+      return new Response(Buffer.from('RIFF0000WEBPpayload'),{headers:{'Cross-Origin-Resource-Policy':policy}});
+    }});
+    await assert.rejects(()=>probe(image),/does not allow.*embedded/);
+  }
+});
 test('automatic selection skips a listed source whose actual page fails, then reports the working fallback',async()=>{
   const row={id:'chapter1',chapter:'1'};
   const selected=await selectWorkingSource([
