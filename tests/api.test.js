@@ -39,14 +39,20 @@ test('empty chapter feeds stay empty instead of returning fake chapters', async 
 test('automatic sources retain readable MangaDex chapters when an alternate source is unavailable', async () => {
   await mocked(async (input) => {
     const url = new URL(input);
+    if (url.hostname === 'fixture.mangadex.network') return new Response(Buffer.from([255,216,255,224,0,0,0,0]));
     if (url.origin !== 'https://api.mangadex.org') return new Response('Unavailable', { status: 403 });
-    return url.pathname.endsWith('/feed') ? Response.json({ result: 'ok', data: [c], total: 1 }) : ok(manga);
+    if (url.pathname.endsWith('/feed')) return Response.json({ result: 'ok', data: [c], total: 1 });
+    if (url.pathname.startsWith('/chapter/')) return ok(c);
+    if (url.pathname.startsWith('/at-home/')) return Response.json({result:'ok',baseUrl:'https://fixture.mangadex.network',chapter:{hash:'a'.repeat(32),data:['1.jpg']}});
+    return ok(manga);
   }, async () => {
     const result = await handleRequest('/api/manga/' + id + '/chapters?source=auto&all=1');
     assert.equal(result.status, 200);
     assert.equal(result.body.source, 'mangadex');
     assert.equal(result.body.data[0].id, chapter);
-    assert.match(result.body.sourceWarning, /HTTP 403/);
+    assert.equal(result.body.sourceHealth.status, 'working');
+    assert.equal(result.body.sourceHealth.attempts[0].source, 'atsumaru');
+    assert.match(result.body.sourceHealth.attempts[0].message, /HTTP 403/);
   });
 });
 test('chapter pages verify manga identity and trusted HTTPS image hosts', async () => {

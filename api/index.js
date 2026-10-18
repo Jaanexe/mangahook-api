@@ -4,6 +4,10 @@ const { SourceError, CHAPTER_ID, createWeebSource } = require('../lib/weebcentra
 const weeb = createWeebSource();
 const { CHAPTER_ID: KATANA_CHAPTER_ID, createKatanaSource } = require('../lib/mangakatana');
 const katana = createKatanaSource();
+const { CHAPTER_ID: ATSU_CHAPTER_ID, createAtsuSource } = require('../lib/atsumaru');
+const atsu = createAtsuSource();
+const { createImageProbe, selectWorkingSource } = require('../lib/sourceSelection');
+const probeImage = createImageProbe();
 const UUID = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i;
 class ApiError extends SourceError {}
 const text = (value) => typeof value === 'string' ? value : '';
@@ -74,7 +78,7 @@ async function handleRequest(url, method = 'GET') {
     if (method !== 'GET') throw new ApiError(405, 'Only GET requests are supported.');
     const parsed = new URL(url, 'https://mangahook.local');
     const path = parsed.pathname.replace(/\/$/, '') || '/', q = parsed.searchParams;
-    if (path === '/') return { status: 200, maxAge: 300, body: { name: 'MangaHook API', version: 3, source: 'MangaDex + Weeb Central', endpoints: ['/api/manga', '/api/manga/:id', '/api/manga/:id/chapters', '/api/chapter/:id?manga=:mangaId', '/api/tags'] } };
+    if (path === '/') return { status: 200, maxAge: 300, body: { name: 'MangaHook API', version: 4, source: 'Atsumaru + MangaKatana + MangaDex + Weeb Central', endpoints: ['/api/manga', '/api/manga/:id', '/api/manga/:id/chapters', '/api/chapter/:id?manga=:mangaId', '/api/tags'] } };
     if (['/api/manga', '/api/mangaList', '/api/search'].includes(path)) {
       validateQuery(q, ['q', 'page', 'status', 'genre', 'language', 'sort']);
       const paging = page(q, 24), term = (q.get('q') || '').trim();
@@ -103,9 +107,11 @@ async function handleRequest(url, method = 'GET') {
     const manga = path.match(/^\/api\/manga\/([^/]+)(\/chapters)?$/);
     if (manga) {
       const id = validId(manga[1]);
-      validateQuery(q, manga[2] ? ['language', 'page', 'source', 'all'] : []);
+      validateQuery(q, manga[2] ? ['language', 'page', 'source', 'all', 'preferred'] : []);
       const source = q.get('source') || 'mangadex', all = q.get('all') === '1';
-      if (!['auto', 'mangadex', 'weebcentral', 'mangakatana'].includes(source) || (q.has('all') && !['0', '1'].includes(q.get('all')))) throw new ApiError(400, 'Invalid chapter source or catalogue mode.');
+      if (!['auto', 'mangadex', 'weebcentral', 'mangakatana', 'atsumaru'].includes(source) || (q.has('all') && !['0', '1'].includes(q.get('all')))) throw new ApiError(400, 'Invalid chapter source or catalogue mode.');
+      const preferred = q.get('preferred');
+      if (preferred && (source !== 'auto' || !['mangadex', 'weebcentral', 'mangakatana', 'atsumaru'].includes(preferred))) throw new ApiError(400, 'Invalid preferred source.');
       const lang = language(q), paging = page(q, 100);
       if (all && paging.number !== 1) throw new ApiError(400, 'Complete chapter lists start at page one.');
       const include = new URLSearchParams(); browseIncludes(include);
@@ -118,29 +124,41 @@ async function handleRequest(url, method = 'GET') {
         } catch { /* Optional catalogue statistics must not hide the manga. */ }
         return { status: 200, maxAge: 120, body: { data: detail } };
       }
-      if (['weebcentral', 'mangakatana'].includes(source) && lang !== 'en') throw new ApiError(400, 'This source supplies English chapters. Choose MangaDex for other languages.');
-      let sourceWarning;
-      if (lang === 'en' && source !== 'mangadex') {
-        for (const name of source === 'auto' ? ['mangakatana', 'weebcentral'] : [source]) {
-          try {
-            const rows = await (name === 'mangakatana' ? katana : weeb).chapters(detail);
-            if (rows?.length) return { status: 200, maxAge: 120, body: { ...resultPage(all ? rows : rows.slice(paging.offset, paging.offset + 100), all ? 1 : paging.number, all ? Math.max(rows.length, 1) : 100, rows.length), source: name, sourceName: name === 'mangakatana' ? 'MangaKatana' : 'Weeb Central', language: 'en' } };
-            if (source !== 'auto') throw new ApiError(404, 'No readable English edition was found on this source. Try another source.');
-          } catch (error) {
-            if (source !== 'auto') throw error;
-            sourceWarning = error instanceof SourceError ? error.message : 'The alternate source could not be reached. Showing MangaDex instead.';
-          }
+      if (['atsumaru', 'weebcentral', 'mangakatana'].includes(source) && lang !== 'en') throw new ApiError(400, 'This source supplies English chapters. Choose MangaDex for other languages.');
+      let mdTotal = 0, mdTruncated = false;
+      async function mdRows() {
+        const params = new URLSearchParams({ limit: all ? '500' : '100', offset: String(paging.offset), 'translatedLanguage[]': lang, includeEmptyPages: '0', includeExternalUrl: '0', 'includes[]': 'scanlation_group', 'order[volume]': 'asc', 'order[chapter]': 'asc' });
+        const feed = await upstream('/manga/' + id + '/feed', params);
+        let rows = feed.data; mdTotal = feed.total; mdTruncated = all && feed.total > 5000;
+        if (all) for (let offset = 500; offset < Math.min(feed.total, 5000); offset += 500) {
+          params.set('offset', String(offset));
+          rows = rows.concat((await upstream('/manga/' + id + '/feed', params)).data);
         }
+        return rows.filter(c => c.attributes?.pages > 0 && !c.attributes.externalUrl).map(chapterRow);
       }
-      const params = new URLSearchParams({ limit: all ? '500' : '100', offset: String(paging.offset), 'translatedLanguage[]': lang, includeEmptyPages: '0', includeExternalUrl: '0', 'includes[]': 'scanlation_group', 'order[volume]': 'asc', 'order[chapter]': 'asc' });
-      const feed = await upstream('/manga/' + id + '/feed', params);
-      let rows = feed.data;
-      if (all) for (let offset = 500; offset < Math.min(feed.total, 5000); offset += 500) {
-        params.set('offset', String(offset));
-        rows = rows.concat((await upstream('/manga/' + id + '/feed', params)).data);
+      // Preserve the legacy MangaDex list endpoint. Auto mode additionally proves that pages load.
+      if (source === 'mangadex') {
+        const rows = await mdRows();
+        return {status:200,maxAge:60,body:{...resultPage(rows,paging.number,all?Math.max(mdTotal,1):100,mdTotal),source:'mangadex',sourceName:'MangaDex',language:lang,truncated:mdTruncated}};
       }
-      rows = rows.filter((c) => c.attributes?.pages > 0 && !c.attributes.externalUrl).map(chapterRow);
-      return { status: 200, maxAge: 60, body: { ...resultPage(rows, paging.number, all ? Math.max(feed.total, 1) : 100, feed.total), source: 'mangadex', sourceName: 'MangaDex', language: lang, sourceWarning, truncated: all && feed.total > 5000 } };
+      const adapters = {atsumaru:{name:'Atsumaru',api:atsu},mangakatana:{name:'MangaKatana',api:katana},weebcentral:{name:'Weeb Central',api:weeb}};
+      const order = source === 'auto' ? (lang === 'en' ? [...new Set([preferred, 'atsumaru', 'mangakatana', 'mangadex'].filter(Boolean))] : ['mangadex']) : [source];
+      const selected = await selectWorkingSource(order.map(name => ({
+        id:name,name:name === 'mangadex'?'MangaDex':adapters[name].name,
+        chapters:()=>name === 'mangadex'?mdRows():adapters[name].api.chapters(detail),
+        chapter:async row=>{
+          if(name !== 'mangadex')return adapters[name].api.chapter(detail,row.id);
+          const result=await handleRequest('/api/chapter/'+row.id+'?manga='+id);
+          if(result.status!==200)throw new ApiError(result.status,result.body.error);
+          return result.body.data;
+        },
+      })),probeImage);
+      const rows=selected.rows, isMd=selected.source==='mangadex';
+      return {status:200,maxAge:60,body:{
+        ...resultPage(all||isMd?rows:rows.slice(paging.offset,paging.offset+100),all?1:paging.number,all?Math.max(isMd?mdTotal:rows.length,1):100,isMd?mdTotal:rows.length),
+        source:selected.source,sourceName:selected.sourceName,sourceHealth:selected.sourceHealth,language:lang,truncated:isMd&&mdTruncated,
+        sourceWarning:selected.sourceHealth.attempts.some(a=>a.status==='unavailable')?'An unavailable source was skipped.':undefined,
+      }};
     }
     const chapter = path.match(/^\/api\/chapter\/([^/]+)$/);
     if (chapter) {
@@ -149,6 +167,10 @@ async function handleRequest(url, method = 'GET') {
       if (CHAPTER_ID.test(chapter[1])) {
         const m = safeManga((await upstream('/manga/' + mangaId)).data);
         return { status: 200, maxAge: 60, body: { data: await weeb.chapter(m, chapter[1]) } };
+      }
+      if (ATSU_CHAPTER_ID.test(chapter[1])) {
+        const m = safeManga((await upstream('/manga/' + mangaId)).data);
+        return {status:200,maxAge:15,body:{data:await atsu.chapter(m,chapter[1])}};
       }
       if (KATANA_CHAPTER_ID.test(chapter[1])) {
         const m = safeManga((await upstream('/manga/' + mangaId)).data);
@@ -169,7 +191,7 @@ async function handleRequest(url, method = 'GET') {
   } catch (error) {
     const status = error instanceof SourceError ? error.status : 502;
     if (status === 502) console.error('MangaHook upstream request failed:', error.name);
-    return { status, maxAge: 0, body: { error: error instanceof SourceError ? error.message : 'The manga source could not be reached. Please retry.' } };
+    return { status, maxAge: 0, body: { error: error instanceof SourceError ? error.message : 'The manga source could not be reached. Please retry.', ...(error.sourceHealth?{sourceHealth:error.sourceHealth}:{}) } };
   }
 }
 async function handler(req, res) {
