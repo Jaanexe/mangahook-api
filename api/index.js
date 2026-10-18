@@ -11,6 +11,7 @@ const probeImage = createImageProbe();
 const {createDiscovery}=require('../lib/discovery');
 const discovery=createDiscovery({upstream,safeManga,chapterRow});
 const UUID = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i;
+const RELATIONS = new Set(['monochrome','main_story','adapted_from','based_on','prequel','side_story','doujinshi','same_franchise','shared_universe','sequel','spin_off','alternate_story','alternate_version','preserialization','colored','serialization']);
 class ApiError extends SourceError {}
 const text = (value) => typeof value === 'string' ? value : '';
 const localized = (value = {}) => text(value.en) || text(value['ja-ro']) || text(Object.values(value)[0]);
@@ -115,6 +116,18 @@ async function handleRequest(url, method = 'GET') {
       if(q.has('all')&&q.get('all')!=='1')throw new ApiError(400,'Invalid tag mode.');
       const found = await upstream('/manga/tag');
       return { status: 200, maxAge: 3600, body: { data: found.data.filter((t) => q.has('all')||t.attributes?.group === 'genre').map((t) => ({ id: t.id, name: localized(t.attributes.name),group:t.attributes.group })).sort((a,b) => a.name.localeCompare(b.name)) } };
+    }
+    const related = path.match(/^\/api\/manga\/([^/]+)\/related$/);
+    if(related){
+      validateQuery(q,[]);const id=validId(related[1]);
+      const root=(await upstream('/manga/'+id)).data;safeManga(root);
+      if(root.id!==id)throw new ApiError(502,'Related manga identity could not be verified.');
+      const relations=new Map((root.relationships||[]).filter(r=>r.type==='manga' && UUID.test(r.id) && r.id!==id && RELATIONS.has(r.related)).slice(0,24).map(r=>[r.id,r.related]));
+      if(!relations.size)return {status:200,maxAge:600,body:{data:[]}};
+      const params=new URLSearchParams({limit:'24'});browseIncludes(params);
+      for(const relatedId of relations.keys())params.append('ids[]',relatedId);
+      const found=await upstream('/manga',params);
+      return {status:200,maxAge:600,body:{data:found.data.filter(m=>relations.has(m.id)).map(m=>({...safeManga(m),relation:relations.get(m.id)}))}};
     }
     const manga = path.match(/^\/api\/manga\/([^/]+)(\/chapters)?$/);
     if (manga) {

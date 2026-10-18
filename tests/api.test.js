@@ -108,3 +108,30 @@ test('external-only chapters and unrecognised content ratings are never presente
   await mocked(async (input) => new URL(input).pathname.startsWith('/chapter/') ? ok({ ...c, attributes: { ...c.attributes, externalUrl: 'https://publisher.test' } }) : ok(manga), async () => assert.equal((await handleRequest('/api/chapter/' + chapter + '?manga=' + id)).status, 404));
   await mocked(async () => ok({ ...manga, attributes: { ...manga.attributes, contentRating: 'unknown' } }), async () => assert.equal((await handleRequest('/api/manga/' + id)).status, 404));
 });
+
+test('related works use declared catalogue relationships and one bounded batch without guessing IDs',async()=>{
+  let batches=0;
+  await mocked(async input=>{
+    const url=new URL(input);
+    if(url.pathname==='/manga/'+id)return ok({...manga,relationships:[
+      {id:other,type:'manga',related:'sequel'},
+      {id:'not-a-uuid',type:'manga',related:'spin_off'},
+      {id:chapter,type:'manga',related:'unknown'},
+      {id,type:'manga',related:'prequel'},
+    ]});
+    assert.equal(url.pathname,'/manga');batches++;
+    assert.deepEqual(url.searchParams.getAll('ids[]'),[other]);
+    return Response.json({result:'ok',data:[{...manga,id:other},{...manga,id:chapter}]});
+  },async()=>{
+    const r=await handleRequest('/api/manga/'+id+'/related');
+    assert.equal(r.status,200);assert.equal(batches,1);
+    assert.equal(r.body.data.length,1);assert.equal(r.body.data[0].id,other);assert.equal(r.body.data[0].relation,'sequel');
+  });
+});
+
+test('absent related works remain empty and invalid related filters never reach providers',async()=>{
+  await mocked(async()=>ok(manga),async()=>{
+    const r=await handleRequest('/api/manga/'+id+'/related');assert.equal(r.status,200);assert.deepEqual(r.body.data,[]);
+  });
+  await mocked(()=>{throw Error('Unexpected request');},async()=>assert.equal((await handleRequest('/api/manga/'+id+'/related?url=http://localhost')).status,400));
+});
