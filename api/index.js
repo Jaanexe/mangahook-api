@@ -1,124 +1,140 @@
-const express = require('express');
-const cors = require('cors');
-const morgan = require('morgan');
-const app = express();
-
-// Middleware
-app.use(cors());
-app.use(express.json());
-app.use(morgan('dev'));
-
-// Root route
-app.get('/', (req, res) => {
-  res.json({
-    message: 'Welcome to MangaHook API',
-    endpoints: {
-      getAllManga: '/api/manga',
-      getMangaById: '/api/manga/:id',
-      searchManga: '/api/search?q=query'
-    },
-    documentation: 'https://github.com/kiraaziz/mangahook-api'
-  });
-});
-
-// Import routes
-let mangaRoutes, searchRoutes;
-try {
-  mangaRoutes = require('../server/routes/manga.routes');
-  searchRoutes = require('../server/routes/search.routes');
-  
-  // Use routes if they exist
-  app.use('/api/manga', mangaRoutes);
-  app.use('/api/search', searchRoutes);
-} catch (error) {
-  console.error('Error loading routes:', error.message);
-  
-  // Mock manga data that matches the expected format
-  const mockMangaData = {
-    data: [
-      {
-        id: '1',
-        title: 'One Piece',
-        coverImage: 'https://mangahook-api.vercel.app/placeholder-manga1.jpg',
-        description: 'Follows the adventures of Monkey D. Luffy and his pirate crew in order to find the greatest treasure ever left by the legendary Pirate, Gold Roger.',
-        chapters: 1095,
-        status: 'Ongoing',
-        rating: 4.8
-      },
-      {
-        id: '2',
-        title: 'Naruto',
-        coverImage: 'https://mangahook-api.vercel.app/placeholder-manga2.jpg',
-        description: 'Naruto Uzumaki wants to be the best ninja in the land. He\'s done well so far, but with the looming danger posed by the mysterious Akatsuki organization, Naruto knows he must train harder than ever before.',
-        chapters: 700,
-        status: 'Completed',
-        rating: 4.7
-      },
-      // Add more mock data as needed
-    ],
-    pagination: {
-      currentPage: 1,
-      totalPages: 10,
-      totalItems: 100
-    }
-  };
-
-  // Add mock routes
-  app.get('/api/manga', (req, res) => {
-    const page = parseInt(req.query.page) || 1;
-    const limit = 20;
-    const startIndex = (page - 1) * limit;
-    const endIndex = page * limit;
-    
-    const paginatedData = {
-      ...mockMangaData,
-      data: mockMangaData.data.slice(startIndex, endIndex),
-      pagination: {
-        currentPage: page,
-        totalPages: Math.ceil(mockMangaData.data.length / limit),
-        totalItems: mockMangaData.data.length
-      }
-    };
-    
-    res.status(200).json(paginatedData);
-  });
-  
-  app.get('/api/search', (req, res) => {
-    const query = (req.query.q || '').toLowerCase();
-    const filteredData = mockMangaData.data.filter(manga => 
-      manga.title.toLowerCase().includes(query)
-    );
-    
-    res.status(200).json({
-      data: filteredData,
-      pagination: {
-        currentPage: 1,
-        totalPages: 1,
-        totalItems: filteredData.length
-      }
-    });
-  });
-  
-  app.get('/api/manga/:id', (req, res) => {
-    const manga = mockMangaData.data.find(m => m.id === req.params.id);
-    if (manga) {
-      res.status(200).json({ data: manga });
-    } else {
-      res.status(404).json({ message: 'Manga not found' });
-    }
-  });
+// MangaHook serves public catalogue/chapter metadata only. Browser libraries stay on SharkStream.
+const ORIGIN = 'https://api.mangadex.org';
+const UUID = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i;
+class ApiError extends Error {
+  constructor(status, message) { super(message); this.status = status; }
 }
-
-// 404 handler
-app.use((req, res) => {
-  res.status(404).json({ message: 'Not Found' });
-});
-
-// Error handler
-app.use((err, req, res, next) => {
-  console.error(err.stack);
-  res.status(500).json({ message: 'Something broke!', error: err.message });
-});
-
-// Export the Express API
-module.exports = app;
+const text = (value) => typeof value === 'string' ? value : '';
+const localized = (value = {}) => text(value.en) || text(value['ja-ro']) || text(Object.values(value)[0]);
+const pending = new Map();
+async function upstream(path, params = new URLSearchParams()) {
+  const url = ORIGIN + path + (params.size ? '?' + params : '');
+  if (pending.has(url)) return pending.get(url);
+  const task = (async () => {
+    const response = await fetch(url, { headers: { Accept: 'application/json', 'User-Agent': 'SharkStream-MangaHook/2.0' }, signal: AbortSignal.timeout(10000), redirect: 'error' });
+    if (!response.ok) throw new ApiError(response.status === 429 ? 429 : response.status === 404 ? 404 : 502,
+      response.status === 429 ? 'The manga source is busy. Please wait a moment and retry.' : response.status === 404 ? 'This manga or chapter is no longer available.' : 'The manga source is temporarily unavailable.');
+    const value = await response.json();
+    if (value.result !== 'ok') throw new ApiError(502, 'The manga source returned an invalid response.');
+    return value;
+  })();
+  pending.set(url, task);
+  task.then(() => pending.delete(url), () => pending.delete(url));
+  return task;
+}
+function safeManga(m) {
+  if (!m || !UUID.test(m.id) || !['safe', 'suggestive'].includes(m.attributes?.contentRating))
+    throw new ApiError(404, 'This manga is unavailable in this catalogue.');
+  const a = m.attributes;
+  const cover = (m.relationships || []).find((r) => r.type === 'cover_art')?.attributes?.fileName;
+  return {
+    id: m.id, title: localized(a.title), description: localized(a.description),
+    image: typeof cover === 'string' && /^[a-z0-9._-]+$/i.test(cover) ? `https://uploads.mangadex.org/covers/${m.id}/${cover}.256.jpg` : '',
+    authors: [...new Set((m.relationships || []).filter((r) => ['author', 'artist'].includes(r.type)).map((r) => text(r.attributes?.name)).filter(Boolean))],
+    status: text(a.status), year: Number.isInteger(a.year) ? a.year : null,
+    genres: (a.tags || []).filter((t) => ['genre', 'theme', 'format'].includes(t.attributes?.group)).map((t) => localized(t.attributes.name)).filter(Boolean),
+    languages: (a.availableTranslatedLanguages || []).filter((l) => typeof l === 'string'),
+    originalLanguage: text(a.originalLanguage), source: 'mangadex', sourceUrl: `https://mangadex.org/title/${m.id}`,
+  };
+}
+function chapterRow(c) {
+  const a = c.attributes || {};
+  return { id: c.id, chapter: text(a.chapter), volume: text(a.volume), title: text(a.title),
+    language: text(a.translatedLanguage), pages: Number(a.pages) || 0, publishedAt: text(a.readableAt),
+    mangaId: c.relationships?.find((r) => r.type === 'manga')?.id,
+    groups: (c.relationships || []).filter((r) => r.type === 'scanlation_group').map((r) => text(r.attributes?.name)).filter(Boolean),
+  };
+}
+function validId(id) { if (!UUID.test(id || '')) throw new ApiError(400, 'Invalid manga or chapter ID.'); return id; }
+function validateQuery(query, allowed) {
+  if ([...query.keys()].some((k) => !allowed.includes(k))) throw new ApiError(400, 'Unknown manga filter.');
+}
+function page(query, limit) {
+  const value = query.get('page') || '1';
+  if (!/^[1-9]\d{0,3}$/.test(value) || (+value - 1) * limit >= 10000) throw new ApiError(400, 'Invalid catalogue page.');
+  return { number: +value, offset: (+value - 1) * limit };
+}
+function language(query) {
+  const value = query.get('language') || 'en';
+  if (!/^[a-z]{2,3}(?:-[a-z]{2})?$/.test(value)) throw new ApiError(400, 'Invalid chapter language.');
+  return value;
+}
+const browseIncludes = (p) => { p.append('includes[]', 'cover_art'); p.append('includes[]', 'author'); p.append('includes[]', 'artist'); };
+const ratings = (p) => { p.append('contentRating[]', 'safe'); p.append('contentRating[]', 'suggestive'); };
+const resultPage = (data, number, limit, total) => ({ data, pagination: { currentPage: number, totalItems: total, hasNext: number * limit < Math.min(total, 10000) } });
+async function handleRequest(url, method = 'GET') {
+  try {
+    if (method !== 'GET') throw new ApiError(405, 'Only GET requests are supported.');
+    const parsed = new URL(url, 'https://mangahook.local');
+    const path = parsed.pathname.replace(/\/$/, '') || '/', q = parsed.searchParams;
+    if (path === '/') return { status: 200, maxAge: 300, body: { name: 'MangaHook API', version: 2, source: 'MangaDex', endpoints: ['/api/manga', '/api/manga/:id', '/api/manga/:id/chapters', '/api/chapter/:id?manga=:mangaId', '/api/tags'] } };
+    if (['/api/manga', '/api/mangaList', '/api/search'].includes(path)) {
+      validateQuery(q, ['q', 'page', 'status', 'genre', 'language', 'sort']);
+      const paging = page(q, 24), term = (q.get('q') || '').trim();
+      if (term.length > 150) throw new ApiError(400, 'Search is too long.');
+      const params = new URLSearchParams({ limit: '24', offset: String(paging.offset), 'availableTranslatedLanguage[]': language(q), hasAvailableChapters: 'true' });
+      browseIncludes(params); ratings(params);
+      if (term) params.set('title', term);
+      const status = q.get('status');
+      if (status) {
+        if (!['ongoing', 'completed', 'hiatus', 'cancelled'].includes(status)) throw new ApiError(400, 'Invalid publication status.');
+        params.append('status[]', status);
+      }
+      if (q.get('genre')) params.append('includedTags[]', validId(q.get('genre')));
+      const sort = q.get('sort') || 'popular';
+      const sorts = { popular: ['followedCount', 'desc'], latest: ['latestUploadedChapter', 'desc'], newest: ['createdAt', 'desc'], title: ['title', 'asc'], rating: ['rating', 'desc'] };
+      if (!sorts[sort]) throw new ApiError(400, 'Invalid manga sorting.');
+      params.set(`order[${sorts[sort][0]}]`, sorts[sort][1]);
+      const found = await upstream('/manga', params);
+      return { status: 200, maxAge: 60, body: resultPage(found.data.map(safeManga), paging.number, 24, found.total) };
+    }
+    if (path === '/api/tags') {
+      validateQuery(q, []);
+      const found = await upstream('/manga/tag');
+      return { status: 200, maxAge: 3600, body: { data: found.data.filter((t) => t.attributes?.group === 'genre').map((t) => ({ id: t.id, name: localized(t.attributes.name) })).sort((a,b) => a.name.localeCompare(b.name)) } };
+    }
+    const manga = path.match(/^\/api\/manga\/([^/]+)(\/chapters)?$/);
+    if (manga) {
+      const id = validId(manga[1]);
+      validateQuery(q, manga[2] ? ['language', 'page'] : []);
+      const include = new URLSearchParams(); browseIncludes(include);
+      const detail = safeManga((await upstream('/manga/' + id, include)).data);
+      if (!manga[2]) return { status: 200, maxAge: 120, body: { data: detail } };
+      const paging = page(q, 100);
+      const params = new URLSearchParams({ limit: '100', offset: String(paging.offset), 'translatedLanguage[]': language(q), includeEmptyPages: '0', includeExternalUrl: '0', 'includes[]': 'scanlation_group', 'order[volume]': 'asc', 'order[chapter]': 'asc' });
+      const feed = await upstream('/manga/' + id + '/feed', params);
+      return { status: 200, maxAge: 60, body: resultPage(feed.data.filter((c) => c.attributes?.pages > 0 && !c.attributes.externalUrl).map(chapterRow), paging.number, 100, feed.total) };
+    }
+    const chapter = path.match(/^\/api\/chapter\/([^/]+)$/);
+    if (chapter) {
+      validateQuery(q, ['manga']);
+      const id = validId(chapter[1]), mangaId = validId(q.get('manga'));
+      const c = (await upstream('/chapter/' + id)).data;
+      if (c.relationships?.find((r) => r.type === 'manga')?.id !== mangaId) throw new ApiError(400, 'This chapter does not belong to this manga.');
+      await upstream('/manga/' + mangaId).then((d) => safeManga(d.data));
+      if (!c.attributes?.pages || c.attributes.externalUrl) throw new ApiError(404, 'This chapter is not available in the reader.');
+      const images = await upstream('/at-home/server/' + id);
+      const base = new URL(images.baseUrl);
+      if (base.protocol !== 'https:' || base.username || base.password || base.port || !(base.hostname.endsWith('.mangadex.network') || base.hostname === 'uploads.mangadex.org')) throw new ApiError(502, 'The chapter image host could not be verified.');
+      if (!/^[a-f0-9]{32}$/i.test(images.chapter?.hash) || !Array.isArray(images.chapter.data) || images.chapter.data.length > 1000 || !images.chapter.data.length || images.chapter.data.some((f) => typeof f !== 'string' || !/^[a-z0-9._-]+$/i.test(f))) throw new ApiError(502, 'The chapter page list is unavailable.');
+      return { status: 200, maxAge: 30, body: { data: { ...chapterRow(c), images: images.chapter.data.map((f) => `${base.origin}/data/${images.chapter.hash}/${f}`) } } };
+    }
+    throw new ApiError(404, 'Endpoint not found.');
+  } catch (error) {
+    const status = error instanceof ApiError ? error.status : 502;
+    if (status === 502) console.error('MangaHook upstream request failed:', error.name);
+    return { status, maxAge: 0, body: { error: error instanceof ApiError ? error.message : 'The manga source could not be reached. Please retry.' } };
+  }
+}
+async function handler(req, res) {
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  if (req.method === 'OPTIONS') return res.status(204).end();
+  const result = await handleRequest(req.url, req.method);
+  res.setHeader('Cache-Control', result.maxAge ? `public, max-age=15, s-maxage=${result.maxAge}, stale-while-revalidate=30` : 'no-store');
+  if (result.status === 429) res.setHeader('Retry-After', '10');
+  return res.status(result.status).json(result.body);
+}
+module.exports = handler;
+module.exports.handleRequest = handleRequest;
