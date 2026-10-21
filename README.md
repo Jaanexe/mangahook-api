@@ -33,3 +33,9 @@ Run `npm ci --ignore-scripts`, `npm run check` and `npm test`. Node.js 22 is use
 Atsumaru endpoint formats: [Keiyoushi adapter](https://github.com/keiyoushi/extensions-source/tree/main/src/en/atsumaru). Source matching tolerates punctuation/spacing differences while retaining sequel and edition words and rejecting incompatible known years. Atsumaru keeps multiple translation groups; counts of uploads are distinct from counts of chapter numbers. Only verified HTTPS cdn.atsu.moe/static/pages image paths are returned. Metadata caches are bounded and temporary; no account or personal reading data is stored.
 
 Atsumaru currently serves a Cross-Origin-Resource-Policy of same-site to cross-site browser requests. The health check sends SharkStream’s public Origin and normal cross-site image headers and rejects that policy. It never proxies or strips these protections. A direct HTTP 200 alone is not enough to call a source working.
+
+## Catalogue outage recovery
+
+MangaDex remains the primary catalogue. During provider outages MangaBaka supplies public metadata, with separate `mb-` IDs; it is not a chapter host. Credit: https://mangabaka.org/data/api and its contributing sources (CC BY-NC-SA 4.0). Existing MangaDex UUIDs remain unchanged. Chapter adapters must verify the exact title and real page images. MangaDex chapters for a backup record require one explicit, unique AniList cross-reference; unknown editions and missing translations remain unavailable.
+
+Only bounded public metadata is cached, with stale metadata available for 24 hours. No profiles, saves, reading history, cookies or credentials enter this service. Maintenance pages are failures, never fake empty catalogues.
