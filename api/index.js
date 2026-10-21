@@ -1,5 +1,8 @@
 // MangaHook serves public catalogue/chapter metadata only. Browser libraries stay on SharkStream.
 const ORIGIN = 'https://api.mangadex.org';
+const backup = require('../lib/mangabaka');
+let mdUnavailableUntil=0;
+const metadataCache=new Map();
 const { SourceError, CHAPTER_ID, createWeebSource } = require('../lib/weebcentral');
 const weeb = createWeebSource();
 const { CHAPTER_ID: KATANA_CHAPTER_ID, createKatanaSource } = require('../lib/mangakatana');
@@ -18,13 +21,20 @@ const localized = (value = {}) => text(value.en) || text(value['ja-ro']) || text
 const pending = new Map();
 async function upstream(path, params = new URLSearchParams()) {
   const url = ORIGIN + path + (params.size ? '?' + params : '');
+  const cached=metadataCache.get(url);
+  if(cached?.until>Date.now())return cached.value;
+  if(mdUnavailableUntil>Date.now()){if(cached?.staleUntil>Date.now())return cached.value;throw new ApiError(503,"MangaDex is temporarily under maintenance.");}
   if (pending.has(url)) return pending.get(url);
   const task = (async () => {
-    const response = await fetch(url, { headers: { Accept: 'application/json', 'User-Agent': 'SharkStream-MangaHook/2.0' }, signal: AbortSignal.timeout(10000), redirect: 'error' });
+    const response = await fetch(url, { headers: { Accept: 'application/json', 'User-Agent': 'SharkStream-MangaHook/2.0' }, signal: AbortSignal.timeout(5000), redirect: 'error' });
+    if([403,429,500,502,503,504].includes(response.status))mdUnavailableUntil=Date.now()+60000;
+    if (!response.ok && cached?.staleUntil>Date.now())return cached.value;
     if (!response.ok) throw new ApiError(response.status === 429 ? 429 : response.status === 404 ? 404 : 502,
       response.status === 429 ? 'The manga source is busy. Please wait a moment and retry.' : response.status === 404 ? 'This manga or chapter is no longer available.' : 'The manga source is temporarily unavailable.');
     const value = await response.json();
     if (value.result !== 'ok') throw new ApiError(502, 'The manga source returned an invalid response.');
+    metadataCache.set(url,{value,until:Date.now()+120000,staleUntil:Date.now()+86400000});
+    while(metadataCache.size>100)metadataCache.delete(metadataCache.keys().next().value);
     return value;
   })();
   pending.set(url, task);
@@ -62,6 +72,20 @@ function chapterRow(c) {
     source: 'mangadex', sourceName: 'MangaDex', sourceUrl: `https://mangadex.org/chapter/${c.id}`,
   };
 }
+const mdMappings=new Map();
+async function mdIdentity(id, detail) {
+  if(!backup.ID.test(id))return id;
+  if(mdMappings.has(id))return mdMappings.get(id);
+  const record=detail||await backup.detail(id);
+  if(!record.anilistId)throw new ApiError(503,'This backup record has no verified MangaDex mapping. Try another chapter source.');
+  const p=new URLSearchParams({title:record.title,limit:'24'});browseIncludes(p);
+  const d=await upstream('/manga',p);
+  const matches=d.data.filter(m=>UUID.test(m.id)&&Number(m.attributes?.links?.al)===record.anilistId);
+  if(matches.length!==1)throw new ApiError(503,'No unique cross-catalogue edition could be verified. Try another chapter source.');
+  const mapped=safeManga(matches[0]).id;mdMappings.set(id,mapped);while(mdMappings.size>100)mdMappings.delete(mdMappings.keys().next().value);return mapped;
+}
+async function loadDetail(id){if(backup.ID.test(id))return backup.detail(id);const include=new URLSearchParams();browseIncludes(include);return safeManga((await upstream('/manga/'+id,include)).data);}
+function validMangaId(id){if(backup.ID.test(id))return id;return validId(id);}
 function validId(id) { if (!UUID.test(id || '')) throw new ApiError(400, 'Invalid manga or chapter ID.'); return id; }
 function validateQuery(query, allowed) {
   if ([...query.keys()].some((k) => !allowed.includes(k))) throw new ApiError(400, 'Unknown manga filter.');
@@ -85,10 +109,10 @@ async function handleRequest(url, method = 'GET') {
     const parsed = new URL(url, 'https://mangahook.local');
     const path = parsed.pathname.replace(/\/$/, '') || '/', q = parsed.searchParams;
     if (path === '/') return { status: 200, maxAge: 300, body: { name: 'MangaHook API', version: 4, source: 'Atsumaru + MangaKatana + MangaDex + Weeb Central', endpoints: ['/api/manga', '/api/manga/:id', '/api/manga/:id/chapters', '/api/chapter/:id?manga=:mangaId', '/api/tags'] } };
-    if(path==='/api/discover')return await discovery.browse(q);
+    if(path==='/api/discover'){if(['genre','theme','author'].some(k=>(q.get(k)||'').startsWith('mb')))return await backup.browse(q);try{return await discovery.browse(q);}catch(e){if(e.status===400)throw e;return await backup.browse(q);}}
     if(path==='/api/authors') {
       validateQuery(q,['q']);const term=(q.get('q')||'').trim();if(term.length<2||term.length>100)throw new ApiError(400,'Enter 2–100 characters for an author search.');
-      const d=await upstream('/author',new URLSearchParams({name:term,limit:'12'}));
+      let d;try{d=await upstream('/author',new URLSearchParams({name:term,limit:'12'}));}catch(e){if(e.status===400)throw e;return {status:200,maxAge:600,body:{data:await backup.authors(term)}};}
       return {status:200,maxAge:600,body:{data:d.data.filter(a=>UUID.test(a.id)&&typeof a.attributes?.name==='string').map(a=>({id:a.id,name:a.attributes.name}))}};
     }
     if (['/api/manga', '/api/mangaList', '/api/search'].includes(path)) {
@@ -108,18 +132,19 @@ async function handleRequest(url, method = 'GET') {
       const sorts = { popular: ['followedCount', 'desc'], latest: ['latestUploadedChapter', 'desc'], newest: ['createdAt', 'desc'], title: ['title', 'asc'], rating: ['rating', 'desc'] };
       if (!sorts[sort]) throw new ApiError(400, 'Invalid manga sorting.');
       params.set(`order[${sorts[sort][0]}]`, sorts[sort][1]);
-      const found = await upstream('/manga', params);
+      let found;try{found=await upstream('/manga',params);}catch(e){if(e.status===400)throw e;const b=new URLSearchParams(q);b.delete('language');return await backup.browse(b);}
       return { status: 200, maxAge: 60, body: resultPage(found.data.map(safeManga), paging.number, 24, found.total) };
     }
     if (path === '/api/tags') {
       validateQuery(q, ['all']);
       if(q.has('all')&&q.get('all')!=='1')throw new ApiError(400,'Invalid tag mode.');
-      const found = await upstream('/manga/tag');
+      let found;try{found=await upstream('/manga/tag');}catch(e){return {status:200,maxAge:600,body:{data:await backup.tags(q.has('all'))}};}
       return { status: 200, maxAge: 3600, body: { data: found.data.filter((t) => q.has('all')||t.attributes?.group === 'genre').map((t) => ({ id: t.id, name: localized(t.attributes.name),group:t.attributes.group })).sort((a,b) => a.name.localeCompare(b.name)) } };
     }
     const related = path.match(/^\/api\/manga\/([^/]+)\/related$/);
     if(related){
-      validateQuery(q,[]);const id=validId(related[1]);
+      validateQuery(q,[]);const id=validMangaId(related[1]);
+      if(backup.ID.test(id))return {status:200,maxAge:600,body:{data:await backup.related(id)}};
       const root=(await upstream('/manga/'+id)).data;safeManga(root);
       if(root.id!==id)throw new ApiError(502,'Related manga identity could not be verified.');
       const relations=new Map((root.relationships||[]).filter(r=>r.type==='manga' && UUID.test(r.id) && r.id!==id && RELATIONS.has(r.related)).slice(0,24).map(r=>[r.id,r.related]));
@@ -131,7 +156,7 @@ async function handleRequest(url, method = 'GET') {
     }
     const manga = path.match(/^\/api\/manga\/([^/]+)(\/chapters)?$/);
     if (manga) {
-      const id = validId(manga[1]);
+      const id = validMangaId(manga[1]);
       validateQuery(q, manga[2] ? ['language', 'page', 'source', 'all', 'preferred', 'metadata'] : []);
       const source = q.get('source') || 'mangadex', all = q.get('all') === '1';
       if (!['auto', 'mangadex', 'weebcentral', 'mangakatana', 'atsumaru'].includes(source) || (q.has('all') && !['0', '1'].includes(q.get('all')))) throw new ApiError(400, 'Invalid chapter source or catalogue mode.');
@@ -141,9 +166,9 @@ async function handleRequest(url, method = 'GET') {
       const lang = language(q), paging = page(q, 100);
       if (all && paging.number !== 1) throw new ApiError(400, 'Complete chapter lists start at page one.');
       const include = new URLSearchParams(); browseIncludes(include);
-      const detail = safeManga((await upstream('/manga/' + id, include)).data);
+      const detail = await loadDetail(id);
       if (!manga[2]) {
-        try {
+        if(!backup.ID.test(id))try {
           const stats = (await upstream('/statistics/manga/' + id)).statistics?.[id];
           if (Number.isFinite(stats?.rating?.average)) detail.rating = stats.rating.average;
           if (Number.isFinite(stats?.follows)) detail.follows = stats.follows;
@@ -153,14 +178,15 @@ async function handleRequest(url, method = 'GET') {
       if (['atsumaru', 'weebcentral', 'mangakatana'].includes(source) && lang !== 'en') throw new ApiError(400, 'This source supplies English chapters. Choose MangaDex for other languages.');
       let mdTotal = 0, mdTruncated = false;
       async function mdRows() {
+        const mdId=await mdIdentity(id,detail);
         const params = new URLSearchParams({ limit: all ? '500' : '100', offset: String(paging.offset), 'translatedLanguage[]': lang, includeEmptyPages: '0', includeExternalUrl: '0', 'includes[]': 'scanlation_group', 'order[volume]': 'asc', 'order[chapter]': 'asc' });
-        const feed = await upstream('/manga/' + id + '/feed', params);
+        const feed = await upstream('/manga/' + mdId + '/feed', params);
         let rows = feed.data; mdTotal = feed.total; mdTruncated = all && feed.total > 5000;
         if (all) for (let offset = 500; offset < Math.min(feed.total, 5000); offset += 500) {
           params.set('offset', String(offset));
           rows = rows.concat((await upstream('/manga/' + id + '/feed', params)).data);
         }
-        return rows.filter(c => c.attributes?.pages > 0 && !c.attributes.externalUrl).map(chapterRow);
+        return rows.filter(c => c.attributes?.pages > 0 && !c.attributes.externalUrl).map(c=>({...chapterRow(c),mangaId:id}));
       }
       // Preserve the legacy MangaDex list endpoint. Auto mode additionally proves that pages load.
       if (source === 'mangadex') {
@@ -173,7 +199,9 @@ async function handleRequest(url, method = 'GET') {
         return {status:200,maxAge:120,body:{...resultPage(all?rows:rows.slice(paging.offset,paging.offset+100),paging.number,all?Math.max(rows.length,1):100,rows.length),source,sourceName:adapters[source].name,language:lang}};
       }
       const order = source === 'auto' ? (lang === 'en' ? [...new Set([preferred, 'mangakatana', 'atsumaru', 'mangadex'].filter(Boolean))] : ['mangadex']) : [source];
-      const selected = await selectWorkingSource(order.map(name => ({
+      const usableOrder=order;
+      if(!usableOrder.length)throw new ApiError(503,'No verified source has this title in the selected language.');
+      const selected = await selectWorkingSource(usableOrder.map(name => ({
         id:name,name:name === 'mangadex'?'MangaDex':adapters[name].name,
         chapters:()=>name === 'mangadex'?mdRows():adapters[name].api.chapters(detail),
         chapter:async row=>{
@@ -193,29 +221,30 @@ async function handleRequest(url, method = 'GET') {
     const chapter = path.match(/^\/api\/chapter\/([^/]+)$/);
     if (chapter) {
       validateQuery(q, ['manga']);
-      const mangaId = validId(q.get('manga'));
+      const mangaId = validMangaId(q.get('manga'));
       if (CHAPTER_ID.test(chapter[1])) {
-        const m = safeManga((await upstream('/manga/' + mangaId)).data);
+        const m = await loadDetail(mangaId);
         return { status: 200, maxAge: 60, body: { data: await weeb.chapter(m, chapter[1]) } };
       }
       if (ATSU_CHAPTER_ID.test(chapter[1])) {
-        const m = safeManga((await upstream('/manga/' + mangaId)).data);
+        const m = await loadDetail(mangaId);
         return {status:200,maxAge:15,body:{data:await atsu.chapter(m,chapter[1])}};
       }
       if (KATANA_CHAPTER_ID.test(chapter[1])) {
-        const m = safeManga((await upstream('/manga/' + mangaId)).data);
+        const m = await loadDetail(mangaId);
         return { status: 200, maxAge: 15, body: { data: await katana.chapter(m, chapter[1]) } };
       }
       const id = validId(chapter[1]);
+      const mdMangaId=await mdIdentity(mangaId);
       const c = (await upstream('/chapter/' + id)).data;
-      if (c.relationships?.find((r) => r.type === 'manga')?.id !== mangaId) throw new ApiError(400, 'This chapter does not belong to this manga.');
-      await upstream('/manga/' + mangaId).then((d) => safeManga(d.data));
+      if (c.relationships?.find((r) => r.type === 'manga')?.id !== mdMangaId) throw new ApiError(400, 'This chapter does not belong to this manga.');
+      await upstream('/manga/' + mdMangaId).then((d) => safeManga(d.data));
       if (!c.attributes?.pages || c.attributes.externalUrl) throw new ApiError(404, 'This chapter is not available in the reader.');
       const images = await upstream('/at-home/server/' + id);
       const base = new URL(images.baseUrl);
       if (base.protocol !== 'https:' || base.username || base.password || base.port || !(base.hostname.endsWith('.mangadex.network') || base.hostname === 'uploads.mangadex.org')) throw new ApiError(502, 'The chapter image host could not be verified.');
       if (!/^[a-f0-9]{32}$/i.test(images.chapter?.hash) || !Array.isArray(images.chapter.data) || images.chapter.data.length > 1000 || !images.chapter.data.length || images.chapter.data.some((f) => typeof f !== 'string' || !/^[a-z0-9._-]+$/i.test(f))) throw new ApiError(502, 'The chapter page list is unavailable.');
-      return { status: 200, maxAge: 30, body: { data: { ...chapterRow(c), images: images.chapter.data.map((f) => `${base.origin}/data/${images.chapter.hash}/${f}`) } } };
+      return { status: 200, maxAge: 30, body: { data: { ...chapterRow(c), mangaId, images: images.chapter.data.map((f) => `${base.origin}/data/${images.chapter.hash}/${f}`) } } };
     }
     throw new ApiError(404, 'Endpoint not found.');
   } catch (error) {
@@ -236,3 +265,5 @@ async function handler(req, res) {
 }
 module.exports = handler;
 module.exports.handleRequest = handleRequest;
+
+module.exports.resetPublicCache = () => { metadataCache.clear(); mdMappings.clear(); mdUnavailableUntil=0; };

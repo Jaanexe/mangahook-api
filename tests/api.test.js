@@ -1,13 +1,13 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
-const { handleRequest } = require('../api/index');
+const { handleRequest, resetPublicCache } = require('../api/index');
 const id = '00000000-0000-4000-8000-000000000001';
 const chapter = '00000000-0000-4000-8000-000000000002';
 const other = '00000000-0000-4000-8000-000000000003';
 const manga = { id, attributes: { title: { en: 'Fixture manga' }, description: { en: 'Description' }, contentRating: 'safe', status: 'ongoing', availableTranslatedLanguages: ['en'], tags: [] }, relationships: [] };
 const c = { id: chapter, attributes: { pages: 2, chapter: '2.5', translatedLanguage: 'en' }, relationships: [{ id, type: 'manga' }] };
 const ok = (data) => Response.json({ result: 'ok', data });
-async function mocked(fn, body) { const previous = global.fetch; global.fetch = fn; try { await body(); } finally { global.fetch = previous; } }
+async function mocked(fn, body) { const previous = global.fetch; resetPublicCache(); global.fetch = fn; try { await body(); } finally { global.fetch = previous; resetPublicCache(); } }
 test('invalid IDs, filters, pages and methods never reach the upstream', async () => {
   await mocked(() => { throw Error('Should not fetch'); }, async () => {
     for (const url of ['/api/manga/123', '/api/manga?url=http://localhost', '/api/manga?page=0', '/api/manga?page=9999', '/api/manga?status=wrong', '/api/manga?language=../en', '/api/manga?sort=wrong', '/api/chapter/' + chapter + '?manga=../x']) assert.equal((await handleRequest(url)).status, 400, url);

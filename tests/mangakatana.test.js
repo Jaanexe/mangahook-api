@@ -28,4 +28,5 @@ test('MangaKatana never substitutes sequels or follows foreign redirects or acce
   const sequel=createKatanaSource({interval:0,fetcher:async()=>html(search.replaceAll('Fixture manga','Fixture manga sequel'))});assert.equal(await sequel.chapters(manga),null);
   const redirect=createKatanaSource({interval:0,fetcher:async()=>new Response('',{status:302,headers:{location:'http://localhost/private'}})});await assert.rejects(()=>redirect.chapters(manga),/outside/);
   const blocked=createKatanaSource({interval:0,fetcher:async()=>new Response('',{status:403})});await assert.rejects(()=>blocked.chapters(manga),/HTTP 403/);
+  const maintenance=createKatanaSource({interval:0,fetcher:async()=>html('maintenance')});await assert.rejects(()=>maintenance.chapters(manga),/not currently accessible/);
 });
